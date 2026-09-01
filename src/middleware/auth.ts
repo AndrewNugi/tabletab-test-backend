@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { UserRole } from '@tabletab/shared';
+import { UserRole } from '../types/shared';
 
 export interface AuthPayload {
   userId: number;

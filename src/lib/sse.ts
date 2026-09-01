@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { SSEEvent, UserRole } from '@tabletab/shared';
+import { SSEEvent, UserRole } from '../types/shared';
 
 interface SSEClient {
   res: Response;
