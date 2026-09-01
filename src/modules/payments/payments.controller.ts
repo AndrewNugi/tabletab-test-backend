@@ -90,6 +90,28 @@ export async function getStatus(req: Request, res: Response, next: NextFunction)
   }
 }
 
+const mockConfirmSchema = z.object({ order_id: z.number().int() });
+
+// TEST-ONLY — see payments.service.ts mockConfirmPayment(). Public, gated by ENABLE_MOCK_PAYMENTS.
+export async function mockConfirmPush(req: Request, res: Response, next: NextFunction) {
+  const establishmentId = parseInt(req.params.establishmentId);
+  if (isNaN(establishmentId)) {
+    res.status(400).json({ success: false, error: 'Invalid establishment ID' });
+    return;
+  }
+  const parsed = mockConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const result = await paymentsService.mockConfirmPayment(establishmentId, parsed.data.order_id);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Public — called by Safaricom Daraja after the customer completes or cancels payment
 export async function mpesaCallback(req: Request, res: Response, next: NextFunction) {
   const establishmentId = parseInt(req.params.establishmentId);

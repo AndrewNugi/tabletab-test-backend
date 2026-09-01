@@ -27,6 +27,10 @@ router.post('/mpesa/initiate/:establishmentId', ctrl.initiatePush);
 // Customer polls this as a fallback if the webhook hasn't confirmed yet (public)
 router.get('/mpesa/status/:establishmentId/:orderId', statusRateLimit, ctrl.getStatus);
 
+// TEST-ONLY: simulates a successful Daraja callback without a real STK push.
+// Inert unless ENABLE_MOCK_PAYMENTS=true — safe to delete this line for production.
+router.post('/mpesa/mock-confirm/:establishmentId', statusRateLimit, ctrl.mockConfirmPush);
+
 // Safaricom Daraja posts the payment result here (public — called by Safaricom)
 router.post('/mpesa/callback/:establishmentId', ctrl.mpesaCallback);
 

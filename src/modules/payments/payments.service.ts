@@ -374,3 +374,31 @@ export async function getPaymentStatus(establishmentId: number, orderId: number)
   const outcome = await applyStkResult(payment.id, orderId, establishmentId, resultCode, null);
   return { status: outcome === 'unchanged' ? payment.status : outcome };
 }
+
+// ─── TEST-ONLY: mock a successful Daraja callback ────────────────────────────
+// For demos/POC walkthroughs where a real phone can't approve the sandbox STK
+// push. Disabled unless ENABLE_MOCK_PAYMENTS=true — throws otherwise, so this
+// is fully inert in any environment that hasn't explicitly opted in. Reuses
+// applyStkResult so a mock success runs through the exact same downstream path
+// (mark payment confirmed, markOrderPaid, SSE broadcast) as a real callback.
+// Safe to delete: this function, its route, and the frontend button that calls it.
+
+export async function mockConfirmPayment(establishmentId: number, orderId: number) {
+  if (process.env.ENABLE_MOCK_PAYMENTS !== 'true') {
+    throw new AppError('Mock payments are not enabled', 404);
+  }
+
+  const { rows } = await db.query(
+    `SELECT p.id, p.status
+     FROM payments p
+     JOIN orders o ON o.id = p.order_id
+     WHERE p.order_id = $1 AND o.establishment_id = $2
+     ORDER BY p.created_at DESC LIMIT 1`,
+    [orderId, establishmentId]
+  );
+  const payment = rows[0] as { id: number; status: string } | undefined;
+  if (!payment) throw new AppError('No payment found for this order', 404);
+
+  const outcome = await applyStkResult(payment.id, orderId, establishmentId, 0, `MOCK-${Date.now()}`);
+  return { status: outcome === 'unchanged' ? payment.status : outcome };
+}
