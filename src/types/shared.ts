@@ -9,6 +9,7 @@ export type SSEEventType =
   | 'order:status_changed'
   | 'payment:confirmed'
   | 'table:session_closed'
+  | 'table:reassigned'
   | 'menu:item_availability_changed';
 
 export interface SSEEvent<T = unknown> {

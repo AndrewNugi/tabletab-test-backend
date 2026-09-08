@@ -379,6 +379,53 @@ export async function getPaymentStatus(establishmentId: number, orderId: number)
   return { status: outcome === 'unchanged' ? payment.status : outcome };
 }
 
+// ─── Manual settlement of orders left unpaid when a table session was force-closed ──
+// A manager can close a table session even with unpaid orders on it (so the
+// table frees up for the next customer); those orders stay 'awaiting_payment'
+// indefinitely until settled here. This never touches table_sessions — the
+// order row itself, plus its (now possibly closed) session/table, is all the
+// "stored bill" that's needed.
+
+export async function getUnpaidOrders(establishmentId: number) {
+  const { rows } = await db.query(
+    `SELECT o.*,
+       t.table_name,
+       json_agg(json_build_object(
+         'id', oi.id, 'menu_item_id', oi.menu_item_id, 'quantity', oi.quantity,
+         'unit_price', oi.unit_price, 'notes', oi.notes, 'item_name', mi.name
+       ) ORDER BY oi.id) AS items
+     FROM orders o
+     JOIN table_sessions ts ON ts.id = o.table_session_id
+     JOIN tables t ON t.id = ts.table_id
+     JOIN order_items oi ON oi.order_id = o.id
+     JOIN menu_items mi ON mi.id = oi.menu_item_id
+     WHERE o.establishment_id = $1 AND o.status = 'awaiting_payment'
+     GROUP BY o.id, t.table_name
+     ORDER BY o.placed_at ASC`,
+    [establishmentId]
+  );
+  return rows;
+}
+
+export async function manualSettlePayment(orderId: number, establishmentId: number, reference: string) {
+  const { rows: orderRows } = await db.query(
+    `SELECT * FROM orders WHERE id = $1 AND establishment_id = $2 AND status = 'awaiting_payment'`,
+    [orderId, establishmentId]
+  );
+  const order = orderRows[0];
+  if (!order) throw new AppError('Order not found or already settled', 404);
+
+  await db.query(
+    `INSERT INTO payments (table_session_id, order_id, amount, method, mpesa_ref, phone_number, status)
+     VALUES ($1, $2, $3, 'manual', $4, 'manual', 'confirmed')`,
+    [order.table_session_id, orderId, order.final_amount, reference]
+  );
+
+  // Reuses the same order-paid transition the real M-Pesa webhook uses
+  // (status -> pending, SSE to waiters/customer session).
+  return markOrderPaid(orderId, establishmentId);
+}
+
 // ─── TEST-ONLY: mock a successful Daraja callback ────────────────────────────
 // For demos/POC walkthroughs where a real phone can't approve the sandbox STK
 // push. Disabled unless ENABLE_MOCK_PAYMENTS=true — throws otherwise, so this

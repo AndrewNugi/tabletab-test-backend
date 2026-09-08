@@ -21,6 +21,22 @@ router.put(
   ctrl.setCredentials
 );
 
+// Manager/admin — outstanding bills left by force-closed table sessions
+router.get(
+  '/unpaid',
+  authenticate,
+  requireRole('super_manager', 'admin', 'superadmin'),
+  requireEstablishment,
+  ctrl.listUnpaid
+);
+router.post(
+  '/manual-settle/:orderId',
+  authenticate,
+  requireRole('super_manager', 'admin', 'superadmin'),
+  requireEstablishment,
+  ctrl.manualSettle
+);
+
 // Customer initiates STK push for an order (public)
 router.post('/mpesa/initiate/:establishmentId', ctrl.initiatePush);
 

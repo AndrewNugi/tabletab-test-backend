@@ -48,10 +48,15 @@ export async function createOrder(
   try {
     await client.query('BEGIN');
 
+    // New orders inherit whichever waiter the table is currently assigned to
+    // (NULL if unassigned), so a table already claimed by a waiter doesn't
+    // need each new order separately self-claimed via confirmReceipt.
     const { rows: orderRows } = await client.query(
       `INSERT INTO orders
-         (table_session_id, establishment_id, status, total_amount, discount_amount, final_amount, confirmation_code)
-       VALUES ($1, $2, 'awaiting_payment', $3, 0, $3, $4) RETURNING *`,
+         (table_session_id, establishment_id, status, total_amount, discount_amount, final_amount, confirmation_code, assigned_waiter_id)
+       VALUES ($1, $2, 'awaiting_payment', $3, 0, $3, $4,
+         (SELECT t.assigned_waiter_id FROM table_sessions ts JOIN tables t ON t.id = ts.table_id WHERE ts.id = $1)
+       ) RETURNING *`,
       [tableSessionId, establishmentId, total.toFixed(2), confirmationCode]
     );
     const order = orderRows[0];
@@ -119,6 +124,15 @@ export async function confirmOrderReceipt(orderId: number, establishmentId: numb
   );
   const order = rows[0];
   if (!order) throw new AppError('Order not found or cannot be confirmed', 404);
+
+  // First waiter to act on an unassigned table also claims the table itself,
+  // so the manager's Tables page reflects who's actually serving it without
+  // requiring a separate manual assignment for the common case.
+  await db.query(
+    `UPDATE tables SET assigned_waiter_id = $1
+     WHERE id = (SELECT table_id FROM table_sessions WHERE id = $2) AND assigned_waiter_id IS NULL`,
+    [waiterId, order.table_session_id]
+  );
 
   sseManager.broadcastToSession(order.table_session_id as number, {
     type: 'order:status_changed',

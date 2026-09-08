@@ -15,6 +15,14 @@ const updateTableSchema = z.object({
   message: 'At least one field required',
 });
 
+const leaveSessionSchema = z.object({
+  token: z.string().min(1),
+});
+
+const assignWaiterSchema = z.object({
+  waiter_id: z.number().int().nullable(),
+});
+
 export async function listTables(req: Request, res: Response, next: NextFunction) {
   try {
     const tables = await tablesService.getTablesForEstablishment(req.user!.establishmentId!);
@@ -71,6 +79,37 @@ export async function updateTable(req: Request, res: Response, next: NextFunctio
   }
 }
 
+// Manager/admin — assign, reassign, or unassign (waiter_id: null) a table's waiter
+export async function assignWaiter(req: Request, res: Response, next: NextFunction) {
+  const tableId = parseInt(req.params.id);
+  if (isNaN(tableId)) {
+    res.status(400).json({ success: false, error: 'Invalid table ID' });
+    return;
+  }
+  const parsed = assignWaiterSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const establishmentId = req.user!.establishmentId!;
+    const table = await tablesService.assignWaiterToTable(tableId, establishmentId, parsed.data.waiter_id);
+    sseManager.broadcastToEstablishment(
+      establishmentId,
+      {
+        type: 'table:reassigned',
+        establishmentId,
+        payload: { table_id: tableId, waiter_id: parsed.data.waiter_id },
+        timestamp: new Date().toISOString(),
+      },
+      ['waiter', 'admin', 'super_manager']
+    );
+    res.json({ success: true, data: table });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function regenerateQR(req: Request, res: Response, next: NextFunction) {
   const tableId = parseInt(req.params.id);
   if (isNaN(tableId)) {
@@ -104,7 +143,8 @@ export async function closeTableSession(req: Request, res: Response, next: NextF
       payload: { sessionId },
       timestamp: new Date().toISOString(),
     });
-    res.json({ success: true, data: session });
+    const unpaidOrders = await tablesService.getUnpaidOrdersForSession(sessionId);
+    res.json({ success: true, data: session, unpaid_orders: unpaidOrders });
   } catch (err) {
     next(err);
   }
@@ -136,8 +176,43 @@ export async function initCustomerSession(req: Request, res: Response, next: Nex
       });
       return;
     }
-    const session = await tablesService.getOrCreateSession(tableId, table.establishment_id as number);
-    res.json({ success: true, data: { session, table } });
+    const token = typeof req.query.token === 'string' ? req.query.token : undefined;
+    const result = await tablesService.getOrCreateSession(tableId, table.establishment_id as number, token);
+    if (result.occupied) {
+      res.status(200).json({
+        success: false,
+        occupied: true,
+        error: 'This table is currently in use. Please ask a staff member for help if this seems wrong.',
+      });
+      return;
+    }
+    res.json({ success: true, data: { session: result.session, table, owner_token: result.ownerToken } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Public — customer leaves the table (voluntarily ends their own session)
+export async function leaveSession(req: Request, res: Response, next: NextFunction) {
+  const sessionId = parseInt(req.params.sessionId);
+  if (isNaN(sessionId)) {
+    res.status(400).json({ success: false, error: 'Invalid session ID' });
+    return;
+  }
+  const parsed = leaveSessionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const session = await tablesService.leaveSession(sessionId, parsed.data.token);
+    sseManager.broadcastToSession(sessionId, {
+      type: 'table:session_closed',
+      establishmentId: session.establishment_id as number,
+      payload: { sessionId },
+      timestamp: new Date().toISOString(),
+    });
+    res.json({ success: true, data: session });
   } catch (err) {
     next(err);
   }

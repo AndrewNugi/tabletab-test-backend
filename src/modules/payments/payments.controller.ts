@@ -90,6 +90,43 @@ export async function getStatus(req: Request, res: Response, next: NextFunction)
   }
 }
 
+// Manager/admin — list orders left unpaid after a table session was force-closed
+export async function listUnpaid(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orders = await paymentsService.getUnpaidOrders(req.user!.establishmentId!);
+    res.json({ success: true, data: orders });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const manualSettleSchema = z.object({ reference: z.string().min(1) });
+
+// Manager/admin — record a manual settlement (e.g. an M-Pesa till/receipt code
+// read off the customer's phone) for an order that was left unpaid
+export async function manualSettle(req: Request, res: Response, next: NextFunction) {
+  const orderId = parseInt(req.params.orderId);
+  if (isNaN(orderId)) {
+    res.status(400).json({ success: false, error: 'Invalid order ID' });
+    return;
+  }
+  const parsed = manualSettleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const order = await paymentsService.manualSettlePayment(
+      orderId,
+      req.user!.establishmentId!,
+      parsed.data.reference
+    );
+    res.json({ success: true, data: order });
+  } catch (err) {
+    next(err);
+  }
+}
+
 const mockConfirmSchema = z.object({ order_id: z.number().int() });
 
 // TEST-ONLY — see payments.service.ts mockConfirmPayment(). Public, gated by ENABLE_MOCK_PAYMENTS.
