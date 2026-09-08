@@ -45,7 +45,8 @@ export async function listOrders(req: Request, res: Response, next: NextFunction
   try {
     const orders = await ordersService.getOrdersForEstablishment(
       req.user!.establishmentId!,
-      status
+      status,
+      { role: req.user!.role, userId: req.user!.userId }
     );
     res.json({ success: true, data: orders });
   } catch (err) {
@@ -61,7 +62,7 @@ export async function confirmReceipt(req: Request, res: Response, next: NextFunc
     return;
   }
   try {
-    const order = await ordersService.confirmOrderReceipt(id, req.user!.establishmentId!);
+    const order = await ordersService.confirmOrderReceipt(id, req.user!.establishmentId!, req.user!.userId);
     res.json({ success: true, data: order });
   } catch (err) {
     next(err);

@@ -108,11 +108,14 @@ export async function markOrderPaid(orderId: number, establishmentId: number) {
   return fullOrder;
 }
 
-export async function confirmOrderReceipt(orderId: number, establishmentId: number) {
+// Atomic UPDATE ... WHERE status = 'pending' means only the first waiter to
+// confirm receipt wins the claim — a second waiter's request affects zero
+// rows and gets the 404 below, so two waiters can't both take the same order.
+export async function confirmOrderReceipt(orderId: number, establishmentId: number, waiterId: number) {
   const { rows } = await db.query(
-    `UPDATE orders SET status = 'in_progress', confirmed_at = NOW()
+    `UPDATE orders SET status = 'in_progress', confirmed_at = NOW(), assigned_waiter_id = $3
      WHERE id = $1 AND establishment_id = $2 AND status = 'pending' RETURNING *`,
-    [orderId, establishmentId]
+    [orderId, establishmentId, waiterId]
   );
   const order = rows[0];
   if (!order) throw new AppError('Order not found or cannot be confirmed', 404);
@@ -120,16 +123,18 @@ export async function confirmOrderReceipt(orderId: number, establishmentId: numb
   sseManager.broadcastToSession(order.table_session_id as number, {
     type: 'order:status_changed',
     establishmentId,
-    payload: { order_id: orderId, status: 'in_progress' },
+    payload: { order_id: orderId, status: 'in_progress', assigned_waiter_id: waiterId },
     timestamp: new Date().toISOString(),
   });
 
+  // Sent to every waiter so the board updates in real time; the waiter client
+  // drops the order from its list unless assigned_waiter_id matches itself.
   sseManager.broadcastToEstablishment(
     establishmentId,
     {
       type: 'order:status_changed',
       establishmentId,
-      payload: { order_id: orderId, status: 'in_progress' },
+      payload: { order_id: orderId, status: 'in_progress', assigned_waiter_id: waiterId },
       timestamp: new Date().toISOString(),
     },
     ['waiter', 'admin', 'super_manager']
@@ -168,7 +173,14 @@ export async function confirmOrderDelivery(confirmationCode: string, establishme
   return order;
 }
 
-export async function getOrdersForEstablishment(establishmentId: number, status?: string) {
+// Waiters only see orders that are unclaimed ('pending') or claimed by themselves —
+// once another waiter confirms receipt, the order drops out of everyone else's list.
+// Admins/managers/superadmins always see everything, plus who claimed each order.
+export async function getOrdersForEstablishment(
+  establishmentId: number,
+  status: string | undefined,
+  viewer: { role: string; userId: number }
+) {
   const params: unknown[] = [establishmentId];
   let statusClause: string;
 
@@ -179,9 +191,17 @@ export async function getOrdersForEstablishment(establishmentId: number, status?
     statusClause = `AND o.status != 'awaiting_payment'`;
   }
 
+  let visibilityClause = '';
+  if (viewer.role === 'waiter') {
+    params.push(viewer.userId);
+    visibilityClause = `AND (o.assigned_waiter_id IS NULL OR o.assigned_waiter_id = $${params.length})`;
+  }
+
   const { rows } = await db.query(
     `SELECT o.*,
        t.table_name,
+       u.first_name AS assigned_waiter_first_name,
+       u.last_name AS assigned_waiter_last_name,
        json_agg(json_build_object(
          'id', oi.id, 'menu_item_id', oi.menu_item_id, 'quantity', oi.quantity,
          'unit_price', oi.unit_price, 'notes', oi.notes, 'item_name', mi.name
@@ -189,10 +209,11 @@ export async function getOrdersForEstablishment(establishmentId: number, status?
      FROM orders o
      JOIN table_sessions ts ON ts.id = o.table_session_id
      JOIN tables t ON t.id = ts.table_id
+     LEFT JOIN users u ON u.id = o.assigned_waiter_id
      JOIN order_items oi ON oi.order_id = o.id
      JOIN menu_items mi ON mi.id = oi.menu_item_id
-     WHERE o.establishment_id = $1 ${statusClause}
-     GROUP BY o.id, t.table_name
+     WHERE o.establishment_id = $1 ${statusClause} ${visibilityClause}
+     GROUP BY o.id, t.table_name, u.first_name, u.last_name
      ORDER BY o.placed_at DESC`,
     params
   );

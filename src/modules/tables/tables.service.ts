@@ -2,11 +2,24 @@ import QRCode from 'qrcode';
 import db from '../../lib/db';
 import { AppError } from '../../lib/errors';
 
+// Waiters who have claimed (confirmed receipt of) an in-progress order at this
+// table's active session — lets managers see who's serving each table.
+const ASSIGNED_WAITERS_SUBQUERY = `
+  COALESCE(
+    (SELECT json_agg(DISTINCT jsonb_build_object('id', u.id, 'name', u.first_name || ' ' || u.last_name))
+     FROM orders o
+     JOIN users u ON u.id = o.assigned_waiter_id
+     WHERE o.table_session_id = ts.id AND o.status = 'in_progress'),
+    '[]'
+  ) AS assigned_waiters
+`;
+
 export async function getTablesForEstablishment(establishmentId: number) {
   const { rows } = await db.query(
     `SELECT t.*,
             CASE WHEN ts.id IS NOT NULL THEN ts.status::text ELSE 'idle' END AS session_status,
-            ts.id AS active_session_id
+            ts.id AS active_session_id,
+            ${ASSIGNED_WAITERS_SUBQUERY}
      FROM tables t
      LEFT JOIN table_sessions ts ON ts.table_id = t.id AND ts.status != 'closed'
      WHERE t.establishment_id = $1 AND t.is_active = TRUE
@@ -20,7 +33,8 @@ export async function getTableById(tableId: number, establishmentId: number) {
   const { rows } = await db.query(
     `SELECT t.*,
             CASE WHEN ts.id IS NOT NULL THEN ts.status::text ELSE 'idle' END AS session_status,
-            ts.id AS active_session_id
+            ts.id AS active_session_id,
+            ${ASSIGNED_WAITERS_SUBQUERY}
      FROM tables t
      LEFT JOIN table_sessions ts ON ts.table_id = t.id AND ts.status != 'closed'
      WHERE t.id = $1 AND t.establishment_id = $2`,
