@@ -123,7 +123,20 @@ export async function confirmOrderReceipt(orderId: number, establishmentId: numb
     [orderId, establishmentId, waiterId]
   );
   const order = rows[0];
-  if (!order) throw new AppError('Order not found or cannot be confirmed', 404);
+  if (!order) {
+    // The UPDATE above is what actually prevents a second waiter from taking
+    // an already-claimed order (its WHERE status = 'pending' matches zero
+    // rows once someone else has it) — this is just a clearer error message.
+    const { rows: existingRows } = await db.query(
+      `SELECT status, assigned_waiter_id FROM orders WHERE id = $1 AND establishment_id = $2`,
+      [orderId, establishmentId]
+    );
+    const existing = existingRows[0];
+    if (existing && existing.status !== 'pending' && existing.assigned_waiter_id != null) {
+      throw new AppError('This order has already been assigned to another waiter', 409);
+    }
+    throw new AppError('Order not found or cannot be confirmed', 404);
+  }
 
   // First waiter to act on an unassigned table also claims the table itself,
   // so the manager's Tables page reflects who's actually serving it without
@@ -161,7 +174,7 @@ export async function confirmOrderDelivery(confirmationCode: string, establishme
   const { rows } = await db.query(
     `UPDATE orders SET status = 'delivered', delivered_at = NOW(), served_by = $3
      WHERE confirmation_code = $1 AND establishment_id = $2 AND status = 'in_progress' RETURNING *`,
-    [confirmationCode, establishmentId]
+    [confirmationCode, establishmentId, servedBy]
   );
   const order = rows[0];
   if (!order) throw new AppError('Invalid code or order not in progress', 404);
