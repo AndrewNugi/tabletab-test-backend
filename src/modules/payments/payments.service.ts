@@ -178,6 +178,10 @@ export async function initiateStkPush(
   amount: number,
   orderId: number
 ) {
+  // While testing, cap the real STK charge at 1 KES regardless of order total.
+  // Daraja requires an integer amount, so 1 is the smallest possible charge.
+  if (process.env.ENABLE_MOCK_PAYMENTS === 'true') amount = 1;
+
   const normalizedPhone = normalizePhone(phone);
   const creds = await getCredentials(establishmentId);
   const token = await getAccessToken(creds);
